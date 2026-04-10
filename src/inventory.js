@@ -54,16 +54,6 @@ async function resolveComponent(value) {
   }
 }
 
-// Get total available inventory for a component across all fulfillment locations
-async function getComponentInventory(inventoryItemId, fulfillmentLocationIds) {
-  let total = 0;
-  for (const locationId of fulfillmentLocationIds) {
-    const qty = await getInventoryLevel(inventoryItemId, locationId);
-    total += Math.max(0, qty);
-  }
-  return total;
-}
-
 // Calculate and update ghost inventory for a single bundle variant
 export async function syncBundleVariant(variant, fulfillmentLocationIds) {
   const metafields = await getVariantMetafields(variant.id);
@@ -84,21 +74,23 @@ export async function syncBundleVariant(variant, fulfillmentLocationIds) {
     bottomValue ? resolveComponent(bottomValue) : Promise.resolve(null),
   ]);
 
-  const quantities = [];
+  if (!topComponent && !bottomComponent) return null;
 
-  if (topComponent) {
-    const qty = await getComponentInventory(topComponent.inventoryItemId, fulfillmentLocationIds);
-    quantities.push(qty);
+  // Per-location min: sum of min(top, bottom) at each location independently.
+  // This prevents overstating availability when components are at different warehouses.
+  let bundleQty = 0;
+  for (const locationId of fulfillmentLocationIds) {
+    const quantities = [];
+    if (topComponent) {
+      const qty = await getInventoryLevel(topComponent.inventoryItemId, locationId);
+      quantities.push(Math.max(0, qty));
+    }
+    if (bottomComponent) {
+      const qty = await getInventoryLevel(bottomComponent.inventoryItemId, locationId);
+      quantities.push(Math.max(0, qty));
+    }
+    bundleQty += Math.min(...quantities);
   }
-
-  if (bottomComponent) {
-    const qty = await getComponentInventory(bottomComponent.inventoryItemId, fulfillmentLocationIds);
-    quantities.push(qty);
-  }
-
-  if (!quantities.length) return null;
-
-  const bundleQty = Math.min(...quantities);
   const bundleInventoryItemId = variant.inventory_item_id;
 
   await setGhostInventory(bundleInventoryItemId, bundleQty);
