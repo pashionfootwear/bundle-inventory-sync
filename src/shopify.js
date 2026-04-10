@@ -166,7 +166,15 @@ export async function ensureVariantPolicy(variantId) {
 export async function setGhostInventory(inventoryItemId, quantity) {
   const locationId = process.env.GHOST_LOCATION_ID;
 
-  // First connect the inventory item to the ghost location if not already connected
+  // Enable inventory tracking on the item so ghost qty drives storefront availability
+  await shopifyFetch(`/inventory_items/${inventoryItemId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      inventory_item: { id: inventoryItemId, tracked: true },
+    }),
+  });
+
+  // Connect the inventory item to the ghost location if not already connected
   try {
     await shopifyFetch(`/inventory_levels/connect.json`, {
       method: "POST",
