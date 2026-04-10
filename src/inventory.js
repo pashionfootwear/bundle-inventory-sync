@@ -6,7 +6,6 @@ import {
   getInventoryLevel,
   getFulfillmentLocationIds,
   setGhostInventory,
-  ensureVariantPolicy,
 } from "./shopify.js";
 
 // Parse metafield value — could be a variant ID (numeric) or SKU (string)
@@ -94,8 +93,6 @@ export async function syncBundleVariant(variant, fulfillmentLocationIds) {
   }
   const bundleInventoryItemId = variant.inventory_item_id;
 
-  // Ensure inventory_policy=deny so Shopify filter counts reflect actual ghost stock
-  await ensureVariantPolicy(variant.id);
   await setGhostInventory(bundleInventoryItemId, bundleQty);
 
   return {
