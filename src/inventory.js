@@ -211,3 +211,61 @@ export async function syncAffectedBundles(componentVariantId) {
   console.log(`[webhook] Done. Updated ${updated} bundle variants.`);
   return { updated };
 }
+
+// Diagnostic: show exactly what inventory is read for each component of a bundle variant
+export async function diagnoseBundleVariant(variantId) {
+  const fulfillmentLocationIds = await getFulfillmentLocationIds();
+  const ghostId = process.env.GHOST_LOCATION_ID;
+  const allLocationIds = [...fulfillmentLocationIds, ghostId];
+
+  const metafields = await getVariantMetafields(variantId);
+  const topMeta = metafields.find((m) => m.key === "top");
+  const bottomMeta = metafields.find((m) => m.key === "bottom");
+
+  const result = {
+    variantId,
+    ghostLocationId: ghostId,
+    fulfillmentLocationIds,
+    components: {},
+    calculation: [],
+    bundleQty: 0,
+  };
+
+  for (const [key, meta] of [["top", topMeta], ["bottom", bottomMeta]]) {
+    if (!meta) continue;
+    const rawValue = parseMetafieldValue(meta.value);
+    const component = await resolveComponent(rawValue);
+    if (!component) {
+      result.components[key] = { raw: rawValue, error: "Could not resolve component" };
+      continue;
+    }
+
+    const locationInventory = {};
+    for (const locId of allLocationIds) {
+      const qty = await getInventoryLevel(component.inventoryItemId, locId);
+      locationInventory[String(locId)] = qty;
+    }
+    result.components[key] = {
+      raw: rawValue,
+      variantId: component.variantId,
+      inventoryItemId: component.inventoryItemId,
+      inventoryByLocation: locationInventory,
+    };
+  }
+
+  // Recalculate bundle qty with same logic as syncBundleVariant
+  const top = result.components.top;
+  const bottom = result.components.bottom;
+  let bundleQty = 0;
+  for (const locId of fulfillmentLocationIds) {
+    const locStr = String(locId);
+    const quantities = [];
+    if (top?.inventoryByLocation) quantities.push(Math.max(0, top.inventoryByLocation[locStr] ?? 0));
+    if (bottom?.inventoryByLocation) quantities.push(Math.max(0, bottom.inventoryByLocation[locStr] ?? 0));
+    const locMin = quantities.length ? Math.min(...quantities) : 0;
+    result.calculation.push({ locationId: locStr, min: locMin });
+    bundleQty += locMin;
+  }
+  result.bundleQty = bundleQty;
+  return result;
+}

@@ -1,8 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "crypto";
-import { runFullSync, syncAffectedBundles } from "./inventory.js";
-import { getVariant } from "./shopify.js";
+import { runFullSync, syncAffectedBundles, diagnoseBundleVariant } from "./inventory.js";
+import { getVariant, getFulfillmentLocationIds, getInventoryLevel } from "./shopify.js";
 import { enqueue } from "./queue.js";
 
 const app = express();
@@ -31,6 +31,21 @@ function verifyWebhook(req) {
 // Health check
 app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "bundle-inventory-sync" });
+});
+
+// Diagnose a specific variant — shows raw component inventory at each location
+// GET /diagnose/:variantId  (protected by SYNC_SECRET header)
+app.get("/diagnose/:variantId", async (req, res) => {
+  const secret = req.headers["x-sync-secret"];
+  if (secret !== process.env.SYNC_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const result = await diagnoseBundleVariant(req.params.variantId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Manual full sync trigger (protected by SYNC_SECRET)
