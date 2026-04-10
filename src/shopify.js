@@ -3,7 +3,17 @@ const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = "2024-01";
 const BASE = `https://${SHOP}/admin/api/${API_VERSION}`;
 
+// Throttle: minimum 150ms between API calls (~6-7 req/sec, well under the 20/sec limit)
+let lastCallTime = 0;
+async function throttle() {
+  const now = Date.now();
+  const wait = 150 - (now - lastCallTime);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastCallTime = Date.now();
+}
+
 async function shopifyFetch(path, options = {}, retries = 3) {
+  await throttle();
   const url = `${BASE}${path}`;
   const res = await fetch(url, {
     ...options,

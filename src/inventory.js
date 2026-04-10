@@ -136,8 +136,6 @@ export async function runFullSync() {
         errors++;
       }
 
-      // Respect Shopify rate limit (2 req/s on REST)
-      await new Promise((r) => setTimeout(r, 600));
     }
   }
 
@@ -204,7 +202,6 @@ export async function syncAffectedBundles(componentVariantId) {
           updated++;
         }
 
-        await new Promise((r) => setTimeout(r, 600));
       } catch (err) {
         console.error(`[webhook] ✗ Error on variant ${variant.id}:`, err.message);
       }
