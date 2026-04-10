@@ -3,7 +3,7 @@ const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = "2024-01";
 const BASE = `https://${SHOP}/admin/api/${API_VERSION}`;
 
-async function shopifyFetch(path, options = {}) {
+async function shopifyFetch(path, options = {}, retries = 3) {
   const url = `${BASE}${path}`;
   const res = await fetch(url, {
     ...options,
@@ -13,6 +13,14 @@ async function shopifyFetch(path, options = {}) {
       ...options.headers,
     },
   });
+
+  // Retry on rate limit with backoff
+  if (res.status === 429 && retries > 0) {
+    const retryAfter = Number(res.headers.get("retry-after") || 2);
+    console.warn(`[api] Rate limited — retrying in ${retryAfter}s`);
+    await new Promise((r) => setTimeout(r, retryAfter * 1000));
+    return shopifyFetch(path, options, retries - 1);
+  }
 
   if (!res.ok) {
     const text = await res.text();

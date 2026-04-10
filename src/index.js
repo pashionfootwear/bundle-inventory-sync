@@ -3,6 +3,7 @@ import express from "express";
 import crypto from "crypto";
 import { runFullSync, syncAffectedBundles } from "./inventory.js";
 import { getVariant } from "./shopify.js";
+import { enqueue } from "./queue.js";
 
 const app = express();
 
@@ -42,7 +43,7 @@ app.post("/sync", async (req, res) => {
   res.json({ message: "Sync started" });
 
   // Run async — don't block response
-  runFullSync().catch((err) =>
+  enqueue(() => runFullSync()).catch((err) =>
     console.error("[sync] Full sync failed:", err.message)
   );
 });
@@ -71,6 +72,7 @@ app.post("/webhooks/inventory", async (req, res) => {
   try {
     // Get the variant ID from the inventory item ID
     const variantsRes = await fetch(
+
       `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/variants.json?inventory_item_ids=${inventory_item_id}`,
       {
         headers: {
@@ -87,9 +89,11 @@ app.post("/webhooks/inventory", async (req, res) => {
       return;
     }
 
-    await syncAffectedBundles(String(variant.id));
+    enqueue(() => syncAffectedBundles(String(variant.id))).catch((err) =>
+      console.error("[webhook] Sync failed:", err.message)
+    );
   } catch (err) {
-    console.error("[webhook] Error processing inventory update:", err.message);
+    console.error("[webhook] Error looking up variant:", err.message);
   }
 });
 
@@ -98,7 +102,7 @@ app.listen(PORT, () => {
   console.log(`[server] Bundle inventory sync running on port ${PORT}`);
 
   // Run full sync on startup
-  runFullSync().catch((err) =>
+  enqueue(() => runFullSync()).catch((err) =>
     console.error("[startup] Full sync failed:", err.message)
   );
 });
