@@ -116,8 +116,12 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[server] Bundle inventory sync running on port ${PORT}`);
 
-  // Run full sync on startup
-  enqueue(() => runFullSync()).catch((err) =>
-    console.error("[startup] Full sync failed:", err.message)
-  );
+  // Run full sync on startup (unless SKIP_STARTUP_SYNC is set)
+  if (process.env.SKIP_STARTUP_SYNC !== "true") {
+    enqueue(() => runFullSync()).catch((err) =>
+      console.error("[startup] Full sync failed:", err.message)
+    );
+  } else {
+    console.log("[startup] Skipping full sync (SKIP_STARTUP_SYNC=true)");
+  }
 });
