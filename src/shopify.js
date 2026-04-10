@@ -136,6 +136,10 @@ export async function getVariantBySku(sku) {
 
 // Get all active fulfillment location IDs (excludes ghost location)
 export async function getFulfillmentLocationIds() {
+  // If FULFILLMENT_LOCATION_IDS is set, use only those locations
+  if (process.env.FULFILLMENT_LOCATION_IDS) {
+    return process.env.FULFILLMENT_LOCATION_IDS.split(",").map((id) => id.trim());
+  }
   const data = await shopifyFetch(`/locations.json?active=true`);
   const ghostId = String(process.env.GHOST_LOCATION_ID);
   return (data.locations || [])
