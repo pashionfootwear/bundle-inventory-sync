@@ -100,10 +100,17 @@ export async function syncBundleVariant(variant, fulfillmentLocationIds) {
     top: topValue,
     bottom: bottomValue,
     bundleQty,
+    topComponentId: topComponent?.variantId ?? null,
+    bottomComponentId: bottomComponent?.variantId ?? null,
   };
 }
 
+// Cache: componentVariantId → array of bundle variants that reference it
+// Built during full sync, used to make webhook syncs instant
+const componentToBundles = new Map();
+
 // Full sync — all SHOES products, all bundle variants
+// Also rebuilds the component→bundle cache
 export async function runFullSync() {
   console.log("[sync] Starting full sync...");
 
@@ -114,6 +121,8 @@ export async function runFullSync() {
 
   console.log(`[sync] Found ${products.length} SHOES products`);
   console.log(`[sync] Fulfillment locations: ${fulfillmentLocationIds.join(", ")}`);
+
+  componentToBundles.clear();
 
   let updated = 0;
   let skipped = 0;
@@ -128,6 +137,13 @@ export async function runFullSync() {
             `[sync] ✓ ${product.title} / variant ${variant.id} → ${result.bundleQty} bundles`
           );
           updated++;
+
+          // Register in cache
+          for (const componentId of [result.topComponentId, result.bottomComponentId]) {
+            if (!componentId) continue;
+            if (!componentToBundles.has(componentId)) componentToBundles.set(componentId, []);
+            componentToBundles.get(componentId).push(variant);
+          }
         } else {
           skipped++;
         }
@@ -135,28 +151,51 @@ export async function runFullSync() {
         console.error(`[sync] ✗ Error on variant ${variant.id}:`, err.message);
         errors++;
       }
-
     }
   }
 
   console.log(
     `[sync] Done. Updated: ${updated}, Skipped (no bundle metafields): ${skipped}, Errors: ${errors}`
   );
+  console.log(`[sync] Cache built: ${componentToBundles.size} component(s) mapped to bundles`);
 
   return { updated, skipped, errors };
 }
 
 // Targeted sync — called from webhook when a component's inventory changes
-// componentVariantId: the variant whose inventory just changed
+// Uses cache for instant lookup; falls back to full scan if cache is empty
 export async function syncAffectedBundles(componentVariantId) {
-  console.log(`[webhook] Inventory changed for variant ${componentVariantId} — scanning bundles...`);
-
-  const [products, fulfillmentLocationIds] = await Promise.all([
-    getAllShoeProducts(),
-    getFulfillmentLocationIds(),
-  ]);
-
   const componentId = String(componentVariantId);
+  const fulfillmentLocationIds = await getFulfillmentLocationIds();
+
+  // Fast path: use cache
+  if (componentToBundles.size > 0) {
+    const bundles = componentToBundles.get(componentId) || [];
+    if (bundles.length === 0) {
+      console.log(`[webhook] No bundles reference component ${componentId} — skipping`);
+      return { updated: 0 };
+    }
+
+    console.log(`[webhook] Component ${componentId} affects ${bundles.length} bundle variant(s) — syncing...`);
+    let updated = 0;
+    for (const variant of bundles) {
+      try {
+        const result = await syncBundleVariant(variant, fulfillmentLocationIds);
+        if (result) {
+          console.log(`[webhook] ✓ variant ${variant.id} → ${result.bundleQty} bundles`);
+          updated++;
+        }
+      } catch (err) {
+        console.error(`[webhook] ✗ Error on variant ${variant.id}:`, err.message);
+      }
+    }
+    console.log(`[webhook] Done. Updated ${updated} bundle variant(s).`);
+    return { updated };
+  }
+
+  // Slow path: cache not yet built (first webhook before full sync completes)
+  console.log(`[webhook] Cache empty — scanning all products for component ${componentId}...`);
+  const products = await getAllShoeProducts();
   let updated = 0;
 
   for (const product of products) {
@@ -165,50 +204,31 @@ export async function syncAffectedBundles(componentVariantId) {
         const metafields = await getVariantMetafields(variant.id);
         const topMeta = metafields.find((m) => m.key === "top");
         const bottomMeta = metafields.find((m) => m.key === "bottom");
-
         if (!topMeta && !bottomMeta) continue;
 
-        const topValue = topMeta ? parseMetafieldValue(topMeta.value) : null;
-        const bottomValue = bottomMeta ? parseMetafieldValue(bottomMeta.value) : null;
+        const normalizeId = (v) => {
+          if (!v) return null;
+          let val = parseMetafieldValue(v);
+          return val?.startsWith("gid://") ? val.split("/").pop() : val;
+        };
 
-        // Normalize GIDs to numeric IDs for comparison
-        const normalizeId = (v) => v?.startsWith("gid://") ? v.split("/").pop() : v;
-        const topId = normalizeId(topValue);
-        const bottomId = normalizeId(bottomValue);
+        const topId = normalizeId(topMeta?.value);
+        const bottomId = normalizeId(bottomMeta?.value);
 
-        const referencesComponent =
-          topId === componentId ||
-          bottomId === componentId;
-
-        // Also check SKU match (only for non-numeric, non-GID values)
-        let skuMatch = false;
-        if (!referencesComponent) {
-          const [topComp, bottomComp] = await Promise.all([
-            topId && !/^\d+$/.test(topId) ? resolveComponent(topValue) : Promise.resolve(null),
-            bottomId && !/^\d+$/.test(bottomId) ? resolveComponent(bottomValue) : Promise.resolve(null),
-          ]);
-          if (topComp?.variantId === componentId || bottomComp?.variantId === componentId) {
-            skuMatch = true;
-          }
-        }
-
-        if (!referencesComponent && !skuMatch) continue;
+        if (topId !== componentId && bottomId !== componentId) continue;
 
         const result = await syncBundleVariant(variant, fulfillmentLocationIds);
         if (result) {
-          console.log(
-            `[webhook] ✓ Updated ${product.title} / variant ${variant.id} → ${result.bundleQty} bundles`
-          );
+          console.log(`[webhook] ✓ variant ${variant.id} → ${result.bundleQty} bundles`);
           updated++;
         }
-
       } catch (err) {
         console.error(`[webhook] ✗ Error on variant ${variant.id}:`, err.message);
       }
     }
   }
 
-  console.log(`[webhook] Done. Updated ${updated} bundle variants.`);
+  console.log(`[webhook] Done. Updated ${updated} bundle variant(s).`);
   return { updated };
 }
 
