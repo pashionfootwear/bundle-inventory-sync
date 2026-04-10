@@ -147,21 +147,6 @@ export async function getFulfillmentLocationIds() {
     .map((l) => l.id);
 }
 
-// Ensure variant uses Shopify inventory tracking with deny policy
-// so filter counts reflect actual ghost location stock, not always-available
-export async function ensureVariantPolicy(variantId) {
-  await shopifyFetch(`/variants/${variantId}.json`, {
-    method: "PUT",
-    body: JSON.stringify({
-      variant: {
-        id: variantId,
-        inventory_management: "shopify",
-        inventory_policy: "deny",
-      },
-    }),
-  });
-}
-
 // Set inventory at ghost location
 export async function setGhostInventory(inventoryItemId, quantity) {
   const locationId = process.env.GHOST_LOCATION_ID;
