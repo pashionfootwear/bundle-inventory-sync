@@ -180,6 +180,20 @@ export async function setGhostInventory(inventoryItemId, quantity) {
       available: quantity,
     }),
   });
+
+  // Disconnect from all non-ghost locations (cosmetic cleanup for admin view)
+  try {
+    const data = await shopifyFetch(`/inventory_levels.json?inventory_item_ids=${inventoryItemId}`);
+    for (const level of data.inventory_levels || []) {
+      if (String(level.location_id) !== String(locationId)) {
+        await shopifyFetch(`/inventory_levels.json?inventory_item_id=${inventoryItemId}&location_id=${level.location_id}`, {
+          method: "DELETE",
+        });
+      }
+    }
+  } catch (_) {
+    // Non-critical — ignore errors
+  }
 }
 
 // Get inventory item ID from variant ID via API
