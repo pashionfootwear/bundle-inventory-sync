@@ -80,6 +80,15 @@ app.post("/webhooks/inventory", async (req, res) => {
     return;
   }
 
+  // Ignore updates from locations we don't use for inventory calculations
+  if (process.env.FULFILLMENT_LOCATION_IDS) {
+    const watchedIds = process.env.FULFILLMENT_LOCATION_IDS.split(",").map((id) => id.trim());
+    if (!watchedIds.includes(String(location_id))) {
+      console.log(`[webhook] Ignoring update from non-fulfillment location ${location_id}`);
+      return;
+    }
+  }
+
   console.log(
     `[webhook] inventory_levels/update — item ${inventory_item_id} at location ${location_id} = ${available}`
   );
