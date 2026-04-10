@@ -1,0 +1,224 @@
+import {
+  getAllShoeProducts,
+  getVariantMetafields,
+  getVariant,
+  getVariantBySku,
+  getInventoryLevel,
+  getFulfillmentLocationIds,
+  setGhostInventory,
+} from "./shopify.js";
+
+// Parse metafield value — could be a variant ID (numeric) or SKU (string)
+function parseMetafieldValue(value) {
+  if (!value) return null;
+  // Strip quotes if JSON string
+  try {
+    const parsed = JSON.parse(value);
+    return String(parsed).trim();
+  } catch {
+    return String(value).trim();
+  }
+}
+
+// Resolve a metafield value to { variantId, inventoryItemId }
+async function resolveComponent(value) {
+  if (!value) return null;
+
+  // Extract numeric ID from GID format: gid://shopify/ProductVariant/12345 → "12345"
+  if (value.startsWith("gid://")) {
+    value = value.split("/").pop();
+  }
+
+  const isNumeric = /^\d+$/.test(value);
+
+  if (isNumeric) {
+    // It's a variant ID
+    try {
+      const variant = await getVariant(value);
+      if (!variant) return null;
+      return {
+        variantId: String(variant.id),
+        inventoryItemId: String(variant.inventory_item_id),
+      };
+    } catch {
+      return null;
+    }
+  } else {
+    // It's a SKU
+    const variant = await getVariantBySku(value);
+    if (!variant) return null;
+    return {
+      variantId: String(variant.id),
+      inventoryItemId: String(variant.inventory_item_id),
+    };
+  }
+}
+
+// Get total available inventory for a component across all fulfillment locations
+async function getComponentInventory(inventoryItemId, fulfillmentLocationIds) {
+  let total = 0;
+  for (const locationId of fulfillmentLocationIds) {
+    const qty = await getInventoryLevel(inventoryItemId, locationId);
+    total += Math.max(0, qty);
+  }
+  return total;
+}
+
+// Calculate and update ghost inventory for a single bundle variant
+export async function syncBundleVariant(variant, fulfillmentLocationIds) {
+  const metafields = await getVariantMetafields(variant.id);
+
+  const topMeta = metafields.find((m) => m.key === "top");
+  const bottomMeta = metafields.find((m) => m.key === "bottom");
+
+  if (!topMeta && !bottomMeta) {
+    // Not a bundle variant — skip
+    return null;
+  }
+
+  const topValue = topMeta ? parseMetafieldValue(topMeta.value) : null;
+  const bottomValue = bottomMeta ? parseMetafieldValue(bottomMeta.value) : null;
+
+  const [topComponent, bottomComponent] = await Promise.all([
+    topValue ? resolveComponent(topValue) : Promise.resolve(null),
+    bottomValue ? resolveComponent(bottomValue) : Promise.resolve(null),
+  ]);
+
+  const quantities = [];
+
+  if (topComponent) {
+    const qty = await getComponentInventory(topComponent.inventoryItemId, fulfillmentLocationIds);
+    quantities.push(qty);
+  }
+
+  if (bottomComponent) {
+    const qty = await getComponentInventory(bottomComponent.inventoryItemId, fulfillmentLocationIds);
+    quantities.push(qty);
+  }
+
+  if (!quantities.length) return null;
+
+  const bundleQty = Math.min(...quantities);
+  const bundleInventoryItemId = variant.inventory_item_id;
+
+  await setGhostInventory(bundleInventoryItemId, bundleQty);
+
+  return {
+    variantId: variant.id,
+    top: topValue,
+    bottom: bottomValue,
+    bundleQty,
+  };
+}
+
+// Full sync — all SHOES products, all bundle variants
+export async function runFullSync() {
+  console.log("[sync] Starting full sync...");
+
+  const [products, fulfillmentLocationIds] = await Promise.all([
+    getAllShoeProducts(),
+    getFulfillmentLocationIds(),
+  ]);
+
+  console.log(`[sync] Found ${products.length} SHOES products`);
+  console.log(`[sync] Fulfillment locations: ${fulfillmentLocationIds.join(", ")}`);
+
+  let updated = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  for (const product of products) {
+    for (const variant of product.variants) {
+      try {
+        const result = await syncBundleVariant(variant, fulfillmentLocationIds);
+        if (result) {
+          console.log(
+            `[sync] ✓ ${product.title} / variant ${variant.id} → ${result.bundleQty} bundles`
+          );
+          updated++;
+        } else {
+          skipped++;
+        }
+      } catch (err) {
+        console.error(`[sync] ✗ Error on variant ${variant.id}:`, err.message);
+        errors++;
+      }
+
+      // Respect Shopify rate limit (2 req/s on REST)
+      await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+
+  console.log(
+    `[sync] Done. Updated: ${updated}, Skipped (no bundle metafields): ${skipped}, Errors: ${errors}`
+  );
+
+  return { updated, skipped, errors };
+}
+
+// Targeted sync — called from webhook when a component's inventory changes
+// componentVariantId: the variant whose inventory just changed
+export async function syncAffectedBundles(componentVariantId) {
+  console.log(`[webhook] Inventory changed for variant ${componentVariantId} — scanning bundles...`);
+
+  const [products, fulfillmentLocationIds] = await Promise.all([
+    getAllShoeProducts(),
+    getFulfillmentLocationIds(),
+  ]);
+
+  const componentId = String(componentVariantId);
+  let updated = 0;
+
+  for (const product of products) {
+    for (const variant of product.variants) {
+      try {
+        const metafields = await getVariantMetafields(variant.id);
+        const topMeta = metafields.find((m) => m.key === "top");
+        const bottomMeta = metafields.find((m) => m.key === "bottom");
+
+        if (!topMeta && !bottomMeta) continue;
+
+        const topValue = topMeta ? parseMetafieldValue(topMeta.value) : null;
+        const bottomValue = bottomMeta ? parseMetafieldValue(bottomMeta.value) : null;
+
+        // Normalize GIDs to numeric IDs for comparison
+        const normalizeId = (v) => v?.startsWith("gid://") ? v.split("/").pop() : v;
+        const topId = normalizeId(topValue);
+        const bottomId = normalizeId(bottomValue);
+
+        const referencesComponent =
+          topId === componentId ||
+          bottomId === componentId;
+
+        // Also check SKU match (only for non-numeric, non-GID values)
+        let skuMatch = false;
+        if (!referencesComponent) {
+          const [topComp, bottomComp] = await Promise.all([
+            topId && !/^\d+$/.test(topId) ? resolveComponent(topValue) : Promise.resolve(null),
+            bottomId && !/^\d+$/.test(bottomId) ? resolveComponent(bottomValue) : Promise.resolve(null),
+          ]);
+          if (topComp?.variantId === componentId || bottomComp?.variantId === componentId) {
+            skuMatch = true;
+          }
+        }
+
+        if (!referencesComponent && !skuMatch) continue;
+
+        const result = await syncBundleVariant(variant, fulfillmentLocationIds);
+        if (result) {
+          console.log(
+            `[webhook] ✓ Updated ${product.title} / variant ${variant.id} → ${result.bundleQty} bundles`
+          );
+          updated++;
+        }
+
+        await new Promise((r) => setTimeout(r, 600));
+      } catch (err) {
+        console.error(`[webhook] ✗ Error on variant ${variant.id}:`, err.message);
+      }
+    }
+  }
+
+  console.log(`[webhook] Done. Updated ${updated} bundle variants.`);
+  return { updated };
+}

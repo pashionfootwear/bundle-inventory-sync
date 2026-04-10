@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: bundle-inventory-sync
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SHOPIFY_SHOP
+        sync: false
+      - key: SHOPIFY_ACCESS_TOKEN
+        sync: false
+      - key: SHOPIFY_WEBHOOK_SECRET
+        sync: false
+      - key: GHOST_LOCATION_ID
+        sync: false
+      - key: SYNC_SECRET
+        sync: false
